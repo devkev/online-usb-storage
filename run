@@ -1,5 +1,39 @@
 #!/bin/bash
 
+function msg {
+	echo "$(date): $*" | tee -a logfile 1>&2
+}
+
+function cleanup {
+	rc=$?
+	msg "Error: something returned $rc. Cleaning up and aborting."
+	set +e
+	trap "" ERR
+
+	sudo umount tmpfs/mnt
+
+	# Throw away the snapshot.
+	sudo umount snapshot
+	sudo lvremove --yes storage/storage_snapshot
+
+	# Detach the active image from the gadget.
+	echo "" | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+
+	sudo umount mnt
+	sudo vgchange -an storage
+	sudo losetup -d "$loopdev"
+
+	# Throw away what's in ram.
+	sudo umount tmpfs
+
+	msg "exit $rc"
+	exit $rc
+}
+
+trap cleanup ERR
+
+shopt -s nullglob
+
 set -e
 
 cd /home/pi/online-usb-storage
@@ -17,32 +51,59 @@ mkdir -p tmpfs
 chmod 700 tmpfs
 
 if [ -e tmpfs/active.img ]; then
-	echo "Already running, or stale files. Clean up and run again." 1>&2
+	msg "Error: Already running, or stale files. Clean up and run again."
 	exit 1
 fi
 
+msg "Setting up..."
 sudo mount -t tmpfs none tmpfs -o uid=pi,gid=pi,mode=0770
 
 # Make an active image in ram, and give it to the gadget.
 cp -ai template.img tmpfs/active.img
-echo /home/pi/online-usb-storage/tmpfs/active.img | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+loopdev="$(sudo losetup --show -f tmpfs/active.img)"
+mkdir -p mnt
+sleeps=0
+while [ ! -e /dev/mapper/storage-storage ]; do
+	sleep 1
+	sleeps=$(($sleeps + 1))
+	if [ $sleeps -ge 10 ]; then
+		msg "Error: /dev/mapper/storage-storage didn't appear even after waiting 10 secs, aborting"
+		exit 1
+	fi
+done
+sudo mount /dev/mapper/storage-storage mnt
+msg "Starting USB gadget..."
+echo /home/pi/online-usb-storage/mnt/image | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
 
-# FIXME: other triggers might be necessary in some cases, eg. a physical button.
-if ./wait-for-no-more-writes tmpfs/active.img; then
+function wait_for_trigger {
+	# FIXME: other triggers might be necessary in some cases, eg. a physical button.
+	msg "Waiting for writes..."
+	./wait-for-no-more-writes mnt/image
+}
 
-	# Detach the active image from the gadget.
-	echo "" | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+while wait_for_trigger; do
+	msg "Saving new files..."
 
-	# Process the active image.
-	mv tmpfs/active.img tmpfs/process.img
-	mkdir tmpfs/mnt
-	sudo mount tmpfs/process.img tmpfs/mnt -o uid=pi,gid=pi,umask=0077,fmask=0177
+	# Take a snapshot.
+	sudo lvcreate -q -pr --snapshot -n storage_snapshot -L 24M storage/storage > /dev/null
 
-	find tmpfs/mnt -print0 | xargs -0 --no-run-if-empty touch
+	# Process the snapshot.
+	mkdir -p snapshot
+	sudo mount /dev/mapper/storage-storage_snapshot snapshot -o ro
+
+	mkdir -p tmpfs/mnt
+	sudo mount snapshot/image tmpfs/mnt -o ro,uid=pi,gid=pi,umask=0077,fmask=0177
 
 	# FIXME: encrypt the files out onto durable storage, instead of just blindly copying out
 	while read user; do
-		rsync -aP tmpfs/mnt/"$user"/ files/"$user"/
+		for i in tmpfs/mnt/"$user"/*; do
+			fname="${i#tmpfs/mnt/$user/}"
+			if [ ! -e "files/$user/$fname" ]; then
+				rsync -a tmpfs/mnt/"$user"/"$fname" files/"$user"/
+				touch "files/$user/$fname"
+				msg "Saved files/$user/$fname"
+			fi
+		done
 
 		mkdir -p files/"$user"
 		sudo chgrp -R "$user" files/"$user"
@@ -50,26 +111,53 @@ if ./wait-for-no-more-writes tmpfs/active.img; then
 		find files/"$user" \! -type d -print0 | xargs -0 --no-run-if-empty chmod g-x
 	done < users
 
+	fs_used_percent="$(df tmpfs/mnt | gawk 'NR == 2 { print gensub("%$", "", 1, $5); }')"
+	msg "fs is ${fs_used_percent}% full"
+
 	sudo umount tmpfs/mnt
 
-	# Throw away what's in ram, and then repeat.
-	sudo umount tmpfs
+	# Throw away the snapshot.
+	sudo umount snapshot
+	sudo lvremove -q --yes storage/storage_snapshot > /dev/null
 
-	exec "$0" "$@"
+	# If the usb filesystem is too full, then toss it and put a new one in.
+	if [ "${fs_used_percent}" -ge 75 ]; then
+		msg "fs is too full, recreating..."
 
-else
+		# Detach the active image from the gadget.
+		echo "" | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
 
-	# probably user cancelled, but in any case, there were no actual writes, or the watcher died midway through writes, so it's a bust, just clean up
-	rc=$?
-	echo "Error: watcher returned $rc. Cleaning up and aborting." 1>&2
+		sudo umount mnt
+		sudo vgchange -an storage
+		sudo losetup -d "$loopdev"
 
-	# Detach the active image from the gadget.
-	echo "" | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+		# Throw away what's in ram.
+		sudo umount tmpfs
 
-	# Throw away what's in ram.
-	sudo umount tmpfs
+		msg "Setting up..."
+		sudo mount -t tmpfs none tmpfs -o uid=pi,gid=pi,mode=0770
 
-	# Abort.
-	exit $rc
-fi
+		# Make an active image in ram, and give it to the gadget.
+		cp -ai template.img tmpfs/active.img
+		loopdev="$(sudo losetup --show -f tmpfs/active.img)"
+		mkdir -p mnt
+		sleeps=0
+		while [ ! -e /dev/mapper/storage-storage ]; do
+			sleep 1
+			sleeps=$(($sleeps + 1))
+			if [ $sleeps -ge 10 ]; then
+				msg "Error: /dev/mapper/storage-storage didn't appear even after waiting 10 secs, aborting"
+				exit 1
+			fi
+		done
+		sudo mount /dev/mapper/storage-storage mnt
+		msg "Starting USB gadget..."
+		echo /home/pi/online-usb-storage/mnt/image | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+
+	fi
+
+done
+
+# probably user cancelled, but in any case, there were no actual writes, or the watcher died midway through writes, so it's a bust, just clean up and throw it all away
+cleanup
 

@@ -143,6 +143,12 @@ Setup
     # install the .ssh/authorized_keys files
     ```
 
+1. Install required packages:
+
+    ```
+    sudo apt-get install -y lvm2 gawk
+    ```
+
 1. Create the template image:
 
     ```
@@ -174,11 +180,17 @@ Known issues
 
 1. There are a lot of hardcoded magic values sprinkled around.
 
+1. There's a lot of non-DRY repeated code.
+
 1. The code assumes that files are saved in a burst, with the device not otherwise accessing the USB storage (except for initial reads).  If the device does not quiesce its write behaviour, then an external trigger (eg. a physical button) may be necessary to trigger the Pi reading the files from the USB storage filesystem image, otherwise corruption may occur.
 
-1. After files are saved, the USB storage device is (logically) "removed" and then "reinserted".  This can cause the target device to reset its USB usage, including annoying prompts to re-select the target directory, etc.  Instead a copy-on-write clone of the filesystem image should be taken to access the files, and the actual image should only be removed/regenerated/reinserted when it gets close to full, or after some much longer timeout, etc.
-
 1. Files saved onto the USB device aren't encrypted, but should be before they leave RAM.
+
+1. If further files are saved onto the USB filesystem, while previous files are being processed, they won't be handled (until the next time files are saved while the trigger is active and "listening" for writes).
+
+1. Files saved into sub-directories (of the user directories) aren't handled.  They should be.
+
+1. Files saved in the top-level directory (or in sub-directories that aren't the user directories) aren't handled.  They should be, preferably by treating them as if they had been put into the directory of the first user listed in the `users` file.
 
 
 References

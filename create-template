@@ -2,14 +2,29 @@
 
 set -e
 
-dd if=/dev/zero of=template.img bs=1024 count=1 seek=$(( 150 * 1024 - 1 ))
-mkfs.vfat template.img
-mkdir mnt
-sudo mount template.img mnt -o uid=pi,gid=pi,umask=0007,fmask=0111
+rm -f template.img
+dd if=/dev/zero of=template.img bs=1024 count=1 seek=$(( 160 * 1024 - 1 ))
+loopdev="$(sudo losetup --show -f template.img)"
+sudo pvcreate "$loopdev"
+sudo vgcreate storage "$loopdev"
+sudo lvcreate -n storage -L 128M storage
+sudo mkfs.ext4 /dev/mapper/storage-storage
+mkdir -p mnt
+sudo mount /dev/mapper/storage-storage mnt
+sudo chown pi.pi mnt
+chmod 700 mnt
+
+dd if=/dev/zero of=mnt/image bs=1024 count=1 seek=$(( 100 * 1024 - 1 ))
+sudo mkfs.vfat mnt/image
+mkdir -p mnt/mnt
+sudo mount mnt/image mnt/mnt -o uid=pi,gid=pi,umask=0007,fmask=0111
 while read user; do
-	mkdir mnt/"$user"
+	mkdir mnt/mnt/"$user"
 done < users
+sudo umount mnt/mnt
+
 sudo umount mnt
-rmdir mnt
+sudo vgchange -an storage
+sudo losetup -d "$loopdev"
 
 
