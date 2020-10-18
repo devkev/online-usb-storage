@@ -1,0 +1,15 @@
+#!/bin/bash
+
+set -e
+
+dd if=/dev/zero of=template.img bs=1024 count=1 seek=$(( 150 * 1024 - 1 ))
+mkfs.vfat template.img
+mkdir mnt
+sudo mount template.img mnt -o uid=pi,gid=pi,umask=0007,fmask=0111
+while read user; do
+	mkdir mnt/"$user"
+done < users
+sudo umount mnt
+rmdir mnt
+
+
