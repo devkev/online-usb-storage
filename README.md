@@ -7,8 +7,8 @@ I use this with a non-network-enabled scanner, so that it can save the scanned f
 
 It supports being permanently plugged into such a device (the "target device").  Files are saved into different directories for each (pre-configured) potential user of the system, who can then access those files via `rsync`.  Files saved into the top-level root directory are treated as though they were saved into the default user's directory (which is the first user listed in the `users` config file).
 
-Setup
-------
+System setup
+-------------
 
 1. These instructions assume Linux is being used on the host that's installing the Raspberry Pi Zero W.  It should be possible to adjust them accordingly for other operating systems.
 
@@ -174,6 +174,41 @@ Setup
     sudo reboot
     ```
 
+User encryption setup
+----------------------
+
+To ensure that files saved into a user's directory can only be read by that user, the user should do the following steps to enable encryption of their files:
+
+1. Get a copy of the repo:
+
+    ```
+    git clone https://github.com/devkev/online-usb-storage
+    cd online-usb-storage
+    ```
+
+1. Generate a private-public keypair **on their own computer**:
+
+    ```
+    openssl genpkey -algorithm RSA -out .decryption_private_key.pem -pkeyopt rsa_keygen_bits:2048
+    chmod 600 .decryption_private_key.pem
+    mkdir files
+    openssl rsa -pubout -in .decryption_private_key.pem -out files/.encryption_public_key.pub
+    ```
+
+1. Upload the **public key only** to the pi:
+
+    ```
+    rsync -aP files/.encryption_public_key.pub scanner-storage.local:files/
+    ssh scanner-storage.local chmod 644 files/.encryption_public_key.pub
+    ```
+
+1. To get and decrypt newly saved files, each user should run **on their own computer**:
+
+    ```
+    rsync -aP scanner-storage.local:files/. files/.
+    ./decrypt-files
+    ```
+
 
 Known issues
 -------------
@@ -183,8 +218,6 @@ Known issues
 1. There's a lot of non-DRY repeated code.
 
 1. The code assumes that files are saved in a burst, with the device not otherwise accessing the USB storage (except for initial reads).  If the device does not quiesce its write behaviour, then an external trigger (eg. a physical button) may be necessary to trigger the Pi reading the files from the USB storage filesystem image, otherwise corruption may occur.
-
-1. Files saved onto the USB device aren't encrypted, but should be before they leave RAM.
 
 1. If further files are saved onto the USB filesystem, while previous files are being processed, they won't be handled (until the next time files are saved while the trigger is active and "listening" for writes).
 
@@ -197,6 +230,8 @@ References
 * https://www.raspberrypi.org/forums/viewtopic.php?t=213309
 * https://www.raspberrypi.org/forums/viewtopic.php?p=1297312
 * https://www.raspberrypi.org/forums/viewtopic.php?t=223127
+* https://codingbee.net/centos/openssl-demo-encrypting-decrypting-files-using-both-symmetric-and-asymmetric-encryption
+* https://stackoverflow.com/questions/7143514/how-to-encrypt-a-large-file-in-openssl-using-public-key
 
 * https://www.raspberrypi.org/documentation/hardware/raspberrypi/power/README.md
 * https://blog.gbaman.info/?p=699

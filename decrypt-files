@@ -1,0 +1,53 @@
+#!/bin/bash
+
+function msg {
+	echo "$(date): $*" | tee -a logfile 1>&2
+}
+
+if [ ! -e .decryption_private_key.pem ]; then
+	msg "Error: No .decryption_private_key.pem file found, aborting"
+	exit 1
+fi
+mode="$(stat -c '%a' .decryption_private_key.pem)"
+if [ "$mode" != "600" -a "$mode" != "400" ]; then
+	msg "Error: .decryption_private_key.pem has wrong permissions, aborting"
+	exit 1
+fi
+
+newfiles=()
+
+if [ -d files ]; then
+	while read encfname; do
+		fname="${encfname%.enc}"
+		if [ ! -e "$fname" ]; then
+			keyfname="$encfname.key"
+			if [ ! -e "$keyfname" ]; then
+				msg "Warning: skipping $encfname because $keyfname is not present"
+			else
+				newfiles+=("$encfname")
+			fi
+		fi
+	done < <(find files -type f -name '*.enc')
+fi
+
+msg "Found ${#newfiles[@]} new files to decrypt"
+
+for encfname in "${newfiles[@]}"; do
+	fname="${encfname%.enc}"
+	keyfname="$encfname.key"
+	key="$(openssl rsautl -decrypt -inkey .decryption_private_key.pem -in "$keyfname")"
+	if [ ! "$key" ]; then
+		msg "Error: failed to decrypt key for $fname, skipping"
+		rm -f "$fname"
+		continue
+	fi
+	if ! openssl enc -d -aes-256-cbc -pbkdf2 -in "$encfname" -out "$fname" -pass stdin <<<"$key"; then
+		msg "Error: failed to decrypt $fname, skipping"
+		key="$(openssl rand -base64 32)"    # (perhaps) overwrite (in ram) the actual key that was used
+		rm -f "$fname"
+		continue
+	fi
+	key="$(openssl rand -base64 32)"    # (perhaps) overwrite (in ram) the actual key that was used
+	msg "Decrypted $fname"
+done
+

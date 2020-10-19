@@ -36,21 +36,30 @@ shopt -s nullglob
 
 set -e
 
+msg "Setting up..."
+
 cd /home/pi/online-usb-storage
 
 declare -A users
-mkdir -p files
-chmod 771 files
 while read user; do
 	users[$user]=1
 	if [ ! "$firstuser" ]; then
 		firstuser="$user"
 	fi
-	mkdir -p files/"$user"
-	sudo chgrp -R "$user" files/"$user"
-	chmod -R g=rwx,o= files/"$user"
-	find files/"$user" \! -type d -print0 | xargs -0 --no-run-if-empty chmod g-x
 done < users
+
+function fix_user_file_perms {
+	mkdir -p files
+	chmod 771 files
+	for user in "${!users[@]}"; do
+		mkdir -p files/"$user"
+		sudo chgrp -R "$user" files/"$user"
+		find "files/$user" -user pi \! -iname ".*" -type d -print0 | xargs -0 --no-run-if-empty chmod u+w,g=rwx,o=
+		find "files/$user" -user pi \! -iname ".*" \! -type d -print0 | xargs -0 --no-run-if-empty chmod g=rw,o=
+	done
+}
+
+fix_user_file_perms
 
 mkdir -p tmpfs
 chmod 700 tmpfs
@@ -60,7 +69,6 @@ if [ -e tmpfs/active.img ]; then
 	exit 1
 fi
 
-msg "Setting up..."
 sudo mount -t tmpfs none tmpfs -o uid=pi,gid=pi,mode=0770
 
 # Make an active image in ram, and give it to the gadget.
@@ -79,6 +87,36 @@ done
 sudo mount /dev/mapper/storage-storage mnt
 msg "Starting USB gadget..."
 echo /home/pi/online-usb-storage/mnt/image | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
+
+function encrypt_file {
+	local publickeyfile="$1"; shift
+	local inputfile="$1"; shift
+	local outputfile="$1"; shift    # *with* the .enc suffix
+
+	local key="$(openssl rand -base64 32)"
+	local rc="$?"
+	if [ $rc -ne 0 ]; then
+		msg "Error: failed to generate encryption key for $outputfile, skipping"
+		return "$rc"
+	fi
+
+	if ! openssl enc -aes-256-cbc -salt -pbkdf2 -in "$inputfile" -out "$outputfile" -pass stdin <<<"$key"; then
+		local rc="$?"
+		msg "Error: failed to encrypt $outputfile, skipping"
+		rm -f "$outputfile"
+		return "$rc"
+	fi
+
+	if ! openssl rsautl -encrypt -inkey "$publickeyfile" -pubin -out "$outputfile.key" <<<"$key"; then
+		local rc="$?"
+		msg "Error: failed to encrypt key for $outputfile, skipping"
+		rm -f "$outputfile"
+		return "$rc"
+	fi
+
+	local key="$(openssl rand -base64 32)"    # (perhaps) overwrite (in ram) the actual key that was used
+	return 0
+}
 
 function wait_for_trigger {
 	# FIXME: other triggers might be necessary in some cases, eg. a physical button.
@@ -118,23 +156,30 @@ while wait_for_trigger; do
 		esac
 		targetfname="files/$user/$actualfname"
 		targetdir="${targetfname%/*}"
+		publickeyfile="files/$user/.encryption_public_key.pub"
+		if [ -r "$publickeyfile" ]; then
+			targetfname="$targetfname.enc"
+		fi
 		if [ ! -e "$targetfname" ]; then
 			mkdir -p "$targetdir"
 
-			# FIXME: encrypt the files out onto durable storage, instead of just blindly copying out
-			rsync -a tmpfs/mnt/"$fname" "$targetdir"
+			if [ -r "$publickeyfile" ]; then
+				if ! encrypt_file "$publickeyfile" tmpfs/mnt/"$fname" "$targetfname"; then
+					continue
+				fi
+			else
+				if ! rsync -a tmpfs/mnt/"$fname" "$targetdir"; then
+					msg "Error: failed to copy $targetfname, skipping"
+					continue
+				fi
+			fi
 			touch "$targetfname"
 
 			msg "Saved $targetfname"
 		fi
 	done < <(find tmpfs/mnt -type f)
 
-	for user in "${!users[@]}"; do
-		mkdir -p files/"$user"
-		sudo chgrp -R "$user" files/"$user"
-		chmod -R g=rwx,o= files/"$user"
-		find files/"$user" \! -type d -print0 | xargs -0 --no-run-if-empty chmod g-x
-	done
+	fix_user_file_perms
 
 	fs_used_percent="$(df tmpfs/mnt | gawk 'NR == 2 { print gensub("%$", "", 1, $5); }')"
 	msg "fs is ${fs_used_percent}% full"
