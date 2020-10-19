@@ -3,9 +3,9 @@ Online USB storage
 
 This guide explains how to setup a Raspberry Pi Zero W for as a kind of "online USB drive" --- that is, a device which appears like a regular USB stick/thumb drive ("USB removable mass storage device"), but where files saved onto it are accessable via the network.
 
-I use this with a non-network-enabled scanner, so that it can save the scanned files onto (what it believes is) a USB storage device, and I can then easily access them without needing to unplug/replug an actual USB drive to transfer them to my computer.
+I use this with a non-network-enabled scanner, so that it can save the scanned files onto (what it believes is) a USB storage device, and I (and others) can then easily access them without needing to unplug/replug an actual USB drive to transfer them to a computer.
 
-It supports being permanently plugged into such a device (the "target device").  Files are saved into different directories for each (pre-configured) potential user of the system, who can then access those files via `rsync`.
+It supports being permanently plugged into such a device (the "target device").  Files are saved into different directories for each (pre-configured) potential user of the system, who can then access those files via `rsync`.  Files saved into the top-level root directory are treated as though they were saved into the default user's directory (which is the first user listed in the `users` config file).
 
 Setup
 ------
@@ -187,10 +187,6 @@ Known issues
 1. Files saved onto the USB device aren't encrypted, but should be before they leave RAM.
 
 1. If further files are saved onto the USB filesystem, while previous files are being processed, they won't be handled (until the next time files are saved while the trigger is active and "listening" for writes).
-
-1. Files saved into sub-directories (of the user directories) aren't handled.  They should be.
-
-1. Files saved in the top-level directory (or in sub-directories that aren't the user directories) aren't handled.  They should be, preferably by treating them as if they had been put into the directory of the first user listed in the `users` file.
 
 
 References

@@ -38,9 +38,14 @@ set -e
 
 cd /home/pi/online-usb-storage
 
+declare -A users
 mkdir -p files
 chmod 771 files
 while read user; do
+	users[$user]=1
+	if [ ! "$firstuser" ]; then
+		firstuser="$user"
+	fi
 	mkdir -p files/"$user"
 	sudo chgrp -R "$user" files/"$user"
 	chmod -R g=rwx,o= files/"$user"
@@ -94,22 +99,42 @@ while wait_for_trigger; do
 	mkdir -p tmpfs/mnt
 	sudo mount snapshot/image tmpfs/mnt -o ro,uid=pi,gid=pi,umask=0077,fmask=0177
 
-	# FIXME: encrypt the files out onto durable storage, instead of just blindly copying out
-	while read user; do
-		for i in tmpfs/mnt/"$user"/*; do
-			fname="${i#tmpfs/mnt/$user/}"
-			if [ ! -e "files/$user/$fname" ]; then
-				rsync -a tmpfs/mnt/"$user"/"$fname" files/"$user"/
-				touch "files/$user/$fname"
-				msg "Saved files/$user/$fname"
-			fi
-		done
+	while read i; do
+		fname="${i#tmpfs/mnt/}"
+		case "$fname" in
+			*/*)
+				user="${fname%%/*}"
+				if [ "${#users[$user]}" ]; then
+					actualfname="${fname#*/}"    # the filename but without any leading user directory
+				else
+					user="$firstuser"
+					actualfname="$fname"    # the filename but without any leading user directory
+				fi
+				;;
+			*)
+				user="$firstuser"
+				actualfname="$fname"    # the filename but without any leading user directory
+				;;
+		esac
+		targetfname="files/$user/$actualfname"
+		targetdir="${targetfname%/*}"
+		if [ ! -e "$targetfname" ]; then
+			mkdir -p "$targetdir"
 
+			# FIXME: encrypt the files out onto durable storage, instead of just blindly copying out
+			rsync -a tmpfs/mnt/"$fname" "$targetdir"
+			touch "$targetfname"
+
+			msg "Saved $targetfname"
+		fi
+	done < <(find tmpfs/mnt -type f)
+
+	for user in "${!users[@]}"; do
 		mkdir -p files/"$user"
 		sudo chgrp -R "$user" files/"$user"
 		chmod -R g=rwx,o= files/"$user"
 		find files/"$user" \! -type d -print0 | xargs -0 --no-run-if-empty chmod g-x
-	done < users
+	done
 
 	fs_used_percent="$(df tmpfs/mnt | gawk 'NR == 2 { print gensub("%$", "", 1, $5); }')"
 	msg "fs is ${fs_used_percent}% full"
