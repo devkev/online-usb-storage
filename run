@@ -100,7 +100,7 @@ function encrypt_file {
 		return "$rc"
 	fi
 
-	if ! openssl enc -aes-256-cbc -salt -pbkdf2 -in "$inputfile" -out "$outputfile" -pass stdin <<<"$key"; then
+	if ! openssl enc -aes-256-cbc -salt -md sha256 -in "$inputfile" -out "$outputfile" -pass stdin <<<"$key"; then
 		local rc="$?"
 		msg "Error: failed to encrypt $outputfile, skipping"
 		rm -f "$outputfile"
