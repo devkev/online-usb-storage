@@ -221,7 +221,7 @@ Known issues
 
 1. If further files are saved onto the USB filesystem, while previous files are being processed, they won't be handled (until the next time files are saved while the trigger is active and "listening" for writes).
 
-1. The plaintext files hang around in memory indefinitely (until the USB filesystem fills up and is re-initialised), which is not great.  The ideal solution is for them to be destroyed/zeroed immediately after being encrypted onto stable storage, but the exclusive block-device nature of the USB filesystem image makes this difficult (and probably impossible in general, and only possible with the above assumptions of write patterns).  A simpler solution might be to, after some appropriate timeout (eg. 5-10 minutes?) without writes, to re-initialise the USB filesystem image (the same as if it had filled up).
+1. The plaintext files hang around in RAM until at least 5 minutes pass with no writes (unless the USB filesystem fills up), which isn't great.  A better solution is for them to be destroyed/zeroed immediately after being encrypted onto stable storage, but the exclusive block-device nature of the USB filesystem image might make this difficult (and probably impossible in general, and only possible with the above assumptions of write patterns).  Probably using a read/write LVM snapshot, which is then merged after the new files have been zeroed, is the way to do this.  The extra ext4 fs laye r might also complicate this (eg. its journal should maybe be disabled).
 
 
 References

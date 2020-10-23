@@ -5,8 +5,6 @@ function msg {
 }
 
 function cleanup {
-	rc=$?
-	msg "Error: something returned $rc. Cleaning up and aborting."
 	set +e
 	trap "" ERR
 
@@ -25,12 +23,19 @@ function cleanup {
 
 	# Throw away what's in ram.
 	sudo umount tmpfs
+}
+
+function unexpected_failure {
+	rc=$?
+	msg "Error: something returned $rc. Cleaning up and aborting."
+
+	cleanup
 
 	msg "exit $rc"
 	exit $rc
 }
 
-trap cleanup ERR
+trap unexpected_failure ERR
 
 shopt -s nullglob
 
@@ -120,13 +125,11 @@ function encrypt_file {
 
 function wait_for_trigger {
 	# FIXME: other triggers might be necessary in some cases, eg. a physical button.
-	msg "Waiting for writes..."
 	./wait-for-no-more-writes mnt/image
 }
 
+msg "Waiting for writes..."
 while wait_for_trigger; do
-	msg "Saving new files..."
-
 	# Take a snapshot.
 	sudo lvcreate -q -pr --snapshot -n storage_snapshot -L 24M storage/storage > /dev/null
 
@@ -137,7 +140,13 @@ while wait_for_trigger; do
 	mkdir -p tmpfs/mnt
 	sudo mount snapshot/image tmpfs/mnt -o ro,uid=pi,gid=pi,umask=0077,fmask=0177
 
+	new_files=0
+	files_present=0
 	while read i; do
+		if [ "$files_present" -eq 0 ]; then
+			msg "Checking for new files..."
+		fi
+		files_present="$(($files_present + 1))"
 		fname="${i#tmpfs/mnt/}"
 		case "$fname" in
 			*/*)
@@ -161,6 +170,7 @@ while wait_for_trigger; do
 			targetfname="$targetfname.enc"
 		fi
 		if [ ! -e "$targetfname" ]; then
+			new_files="$(($new_files + 1))"
 			mkdir -p "$targetdir"
 
 			if [ -r "$publickeyfile" ]; then
@@ -182,7 +192,6 @@ while wait_for_trigger; do
 	fix_user_file_perms
 
 	fs_used_percent="$(df tmpfs/mnt | gawk 'NR == 2 { print gensub("%$", "", 1, $5); }')"
-	msg "fs is ${fs_used_percent}% full"
 
 	sudo umount tmpfs/mnt
 
@@ -192,40 +201,24 @@ while wait_for_trigger; do
 
 	# If the usb filesystem is too full, then toss it and put a new one in.
 	if [ "${fs_used_percent}" -ge 75 ]; then
+		msg "fs is ${fs_used_percent}% full"
 		msg "fs is too full, recreating..."
 
-		# Detach the active image from the gadget.
-		echo "" | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
-
-		sudo umount mnt
-		sudo vgchange -an storage
-		sudo losetup -d "$loopdev"
-
-		# Throw away what's in ram.
-		sudo umount tmpfs
-
-		msg "Setting up..."
-		sudo mount -t tmpfs none tmpfs -o uid=pi,gid=pi,mode=0770
-
-		# Make an active image in ram, and give it to the gadget.
-		cp -ai template.img tmpfs/active.img
-		loopdev="$(sudo losetup --show -f tmpfs/active.img)"
-		mkdir -p mnt
-		sleeps=0
-		while [ ! -e /dev/mapper/storage-storage ]; do
-			sleep 1
-			sleeps=$(($sleeps + 1))
-			if [ $sleeps -ge 10 ]; then
-				msg "Error: /dev/mapper/storage-storage didn't appear even after waiting 10 secs, aborting"
-				exit 1
-			fi
-		done
-		sudo mount /dev/mapper/storage-storage mnt
-		msg "Starting USB gadget..."
-		echo /home/pi/online-usb-storage/mnt/image | sudo tee /sys/devices/platform/soc/20980000.usb/gadget/lun0/file > /dev/null
-
+		cleanup
+		exec "$0" "$@"
 	fi
 
+	# If there were no new files, then the trigger must have timed out from inactivity.
+	# In which case, if there are any files at all on the usb filesystem, then toss it out and put a new one in.
+	if [ "$new_files" -eq 0 -a "$files_present" -gt 0 ]; then
+		msg "waiting for writes timed out, and there are files present, recreating..."
+		cleanup
+		exec "$0" "$@"
+	fi
+
+	if [ "$files_present" -gt 0 ]; then
+		msg "Waiting for writes..."
+	fi
 done
 
 # probably user cancelled, but in any case, there were no actual writes, or the watcher died midway through writes, so it's a bust, just clean up and throw it all away
